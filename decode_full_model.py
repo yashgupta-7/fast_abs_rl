@@ -20,10 +20,11 @@ from data.batcher import tokenize
 
 from decoding import Abstractor, RLExtractor, DecodeDataset, BeamAbstractor
 from decoding import make_html_safe
-
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from rl import get_bart_summaries
 
 def decode(save_path, model_dir, split, batch_size,
-           beam_size, diverse, max_len, cuda):
+           beam_size, diverse, max_len, cuda, bart=False):
     start = time()
     # setup model
     with open(join(model_dir, 'meta.json')) as f:
@@ -83,11 +84,15 @@ def decode(save_path, model_dir, split, batch_size,
                     ext = [i.item() for i in ext]
                 ext_inds += [(len(ext_arts), len(ext))]
                 ext_arts += [raw_art_sents[i] for i in ext]
-            if beam_size > 1:
-                all_beams = abstractor(ext_arts, beam_size, diverse)
-                dec_outs = rerank_mp(all_beams, ext_inds)
+            if bart:
+                # print("hi")
+                dec_outs = get_bart_summaries(ext_arts, tokenizer, bart_model, beam_size=beam_size)
             else:
-                dec_outs = abstractor(ext_arts)
+                if beam_size > 1:
+                    all_beams = abstractor(ext_arts, beam_size, diverse)
+                    dec_outs = rerank_mp(all_beams, ext_inds)
+                else:
+                    dec_outs = abstractor(ext_arts)
             assert i == batch_size*i_debug
             for j, n in ext_inds:
                 decoded_sents = [' '.join(dec) for dec in dec_outs[j:j+n]]
@@ -160,10 +165,23 @@ if __name__ == '__main__':
 
     parser.add_argument('--no-cuda', action='store_true',
                         help='disable GPU training')
+    parser.add_argument('--bart', type=int, action='store', default=0,
+                        help='use BART base (1) or BART large (2) as abstractor')
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available() and not args.no_cuda
+
+    if args.bart ==  1:
+        tokenizer = AutoTokenizer.from_pretrained("facebook/bart-base")
+        bart_model = AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart/")
+        torch_device = 'cuda' if args.cuda else 'cpu' #torch.cuda.is_available()
+        bart_model.to(torch_device)
+    elif args.bart == 2:
+        tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large")
+        bart_model = AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart_large/")
+        torch_device = 'cuda' if args.cuda else 'cpu' #torch.cuda.is_available()
+        bart_model.to(torch_device)
 
     data_split = 'test' if args.test else 'val'
     decode(args.path, args.model_dir,
            data_split, args.batch, args.beam, args.div,
-           args.max_dec_word, args.cuda)
+           args.max_dec_word, args.cuda, bart=args.bart)

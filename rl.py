@@ -12,9 +12,38 @@ from torch.nn import functional as F
 from torch import autograd
 from torch.nn.utils import clip_grad_norm_
 
-from metric import compute_rouge_l, compute_rouge_n
+from metric import compute_rouge_l, compute_rouge_n, compute_bert_score, compute_bleurt_score
 from training import BasicPipeline
 
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+
+tokenizer = None #AutoTokenizer.from_pretrained("facebook/bart-base")
+bart_model = None #AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart_2/")
+torch_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# bart_model.to(torch_device)
+use_bart = 0
+wt_rge = 0.0
+
+def set_abstractor(args):
+    use_bart = args.bart
+    wt_rge = args.wt_rouge
+    if use_bart == 1:
+        tokenizer = AutoTokenizer.from_pretrained("facebook/bart-base")
+        bart_model = AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart_2/")
+        bart_model.to(torch_device) 
+    elif use_bart == 2:
+        tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large")
+        bart_model = AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart_large/")
+        bart_model.to(torch_device) 
+    return
+
+def get_bart_summaries(sents, tokenizer, model, beam_size=2):
+    sents = [" ".join(sent) for sent in sents]
+    batch = tokenizer(sents,truncation=True,padding='longest',max_length=130,return_tensors='pt').to(torch_device)
+    translated = model.generate(batch['input_ids'], max_length=90, num_beams=beam_size) #, early_stopping=True)
+    tgt_text = tokenizer.batch_decode(translated, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+    return [text.split(" ") for text in tgt_text]
 
 def a2c_validate(agent, abstractor, loader):
     agent.eval()
@@ -31,7 +60,10 @@ def a2c_validate(agent, abstractor, loader):
                 ext_inds += [(len(ext_sents), len(indices)-1)]
                 ext_sents += [raw_arts[idx.item()]
                               for idx in indices if idx.item() < len(raw_arts)]
-            all_summs = abstractor(ext_sents)
+            if use_bart:
+                all_summs=get_bart_summaries(ext_sents, tokenizer, bart_model)
+            else:
+                all_summs = abstractor(ext_sents)
             for (j, n), abs_sents in zip(ext_inds, abs_batch):
                 summs = all_summs[j:j+n]
                 # python ROUGE-1 (not official evaluation)
@@ -46,7 +78,7 @@ def a2c_validate(agent, abstractor, loader):
 
 def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
                    gamma=0.99, reward_fn=compute_rouge_l,
-                   stop_reward_fn=compute_rouge_n(n=1), stop_coeff=1.0):
+                   stop_reward_fn=compute_rouge_n(n=1), stop_coeff=1.0, wt_rge = wt_rge):
     opt.zero_grad()
     indices = []
     probs = []
@@ -61,19 +93,52 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
         ext_sents += [raw_arts[idx.item()]
                       for idx in inds if idx.item() < len(raw_arts)]
     with torch.no_grad():
-        summaries = abstractor(ext_sents)
+        if use_bart:
+            summaries = get_bart_summaries(ext_sents, tokenizer, bart_model)
+        else:
+            summaries = abstractor(ext_sents)
     i = 0
     rewards = []
     avg_reward = 0
+    # print(indices)
+    # print(abs_batch)
+    cands = []
+    refs = []
+    F1s = None
+    if reward_fn == compute_bert_score or reward_fn == compute_bleurt_score:
+        # print("bertscore -reward")
+        for inds, abss in zip(indices, abs_batch):
+            for j in range(min(len(inds)-1, len(abss))):
+                cands.append(" ".join(summaries[i+j]))
+                refs.append(" ".join(abss[j]))
+            i += len(inds)-1
+        # print(len(cands), len(refs)) #around 120 each
+        F1s = reward_fn(cands, refs)
+        # print(F1s)
+
+    i = 0
+    t = 0
     for inds, abss in zip(indices, abs_batch):
-        rs = ([reward_fn(summaries[i+j], abss[j])
-              for j in range(min(len(inds)-1, len(abss)))]
+        # print([j for j in range(min(len(inds)-1, len(abss)))])
+        if (reward_fn == compute_bert_score or reward_fn == compute_bleurt_score) and wt_rge != 0:
+            rwd_lst = [(1-wt_rge)*F1s[t + j] + wt_rge*compute_rouge_l(summaries[i+j], abss[j]) for j in range(min(len(inds)-1, len(abss)))]
+            # print(rwd_lst)
+            t += min(len(inds)-1, len(abss))
+        elif (reward_fn == compute_bert_score or reward_fn == compute_bleurt_score):
+            rwd_lst = [F1s[t + j] for j in range(min(len(inds)-1, len(abss)))]
+            # print(rwd_lst)
+            t += min(len(inds)-1, len(abss))
+        else:
+            rwd_lst = [reward_fn(summaries[i+j], abss[j]) for j in range(min(len(inds)-1, len(abss)))]
+        rs = (rwd_lst
               + [0 for _ in range(max(0, len(inds)-1-len(abss)))]
               + [stop_coeff*stop_reward_fn(
                   list(concat(summaries[i:i+len(inds)-1])),
                   list(concat(abss)))])
+        # print(rs)
         assert len(rs) == len(inds)
         avg_reward += rs[-1]/stop_coeff
+        # print(avg_reward)
         i += len(inds)-1
         # compute discounted rewards
         R = 0
@@ -87,6 +152,7 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
     baselines = list(concat(baselines))
     # standardize rewards
     reward = torch.Tensor(rewards).to(baselines[0].device)
+    # print(reward.mean())
     reward = (reward - reward.mean()) / (
         reward.std() + float(np.finfo(np.float32).eps))
     baseline = torch.cat(baselines).squeeze()
@@ -97,7 +163,7 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
         avg_advantage += advantage
         losses.append(-p.log_prob(action)
                       * (advantage/len(indices))) # divide by T*B
-    critic_loss = F.mse_loss(baseline, reward)
+    critic_loss = F.mse_loss(baseline, reward).unsqueeze(dim=0)
     # backprop and update
     autograd.backward(
         [critic_loss] + losses,

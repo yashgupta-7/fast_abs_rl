@@ -25,8 +25,8 @@ from rl import get_grad_fn
 from rl import A2CPipeline
 from decoding import load_best_ckpt
 from decoding import Abstractor, ArticleBatcher
-from metric import compute_rouge_l, compute_rouge_n
-
+from metric import compute_rouge_l, compute_rouge_n, compute_bert_score, compute_bleurt_score
+from rl import set_abstractor
 
 MAX_ABS_LEN = 30
 
@@ -137,6 +137,10 @@ def train(args):
     train_batcher, val_batcher = build_batchers(args.batch)
     # TODO different reward
     reward_fn = compute_rouge_l
+    if (args.reward == "bert-score"):
+        reward_fn = compute_bert_score
+    elif (args.reward == "bleurt-score"):
+        reward_fn = compute_bleurt_score
     stop_reward_fn = compute_rouge_n(n=1)
 
     # save abstractor binary
@@ -198,7 +202,7 @@ if __name__ == '__main__':
                         help='ckeckpoint used decode')
 
     # training options
-    parser.add_argument('--reward', action='store', default='rouge-l',
+    parser.add_argument('--reward', action='store', default='rouge-l', #options -> rouge-l, bert-score, bleurt-score
                         help='reward function for RL')
     parser.add_argument('--lr', type=float, action='store', default=1e-4,
                         help='learning rate')
@@ -222,7 +226,12 @@ if __name__ == '__main__':
                         help='patience for early stopping')
     parser.add_argument('--no-cuda', action='store_true',
                         help='disable GPU training')
+    parser.add_argument('--bart', type=int, action='store', default=0,
+                        help='use BART base (1) or BART large (2) as abstractor')
+    parser.add_argument('--wt_rouge', type=float, action='store', default=0,
+                        help='use BART large as abstractor') 
     args = parser.parse_args()
+    set_abstractor(args)
     args.cuda = torch.cuda.is_available() and not args.no_cuda
 
     train(args)
