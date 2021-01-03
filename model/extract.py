@@ -18,7 +18,7 @@ class ConvSentEncoder(nn.Module):
     def __init__(self, vocab_size, emb_dim, n_hidden, dropout):
         super().__init__()
         self._embedding = nn.Embedding(vocab_size, emb_dim, padding_idx=0)
-        self._convs = nn.ModuleList([nn.Conv1d(emb_dim, n_hidden, i)
+        self._convs = nn.ModuleList([nn.Conv1d(emb_dim, n_hidden, i, padding=2)
                                      for i in range(3, 6)])
         self._dropout = dropout
         self._grad_handle = None

@@ -111,7 +111,11 @@ def pad_batch_tensorize(inputs, pad, cuda=True):
     """
     tensor_type = torch.cuda.LongTensor if cuda else torch.LongTensor
     batch_size = len(inputs)
+    # try:
     max_len = max(len(ids) for ids in inputs)
+    # except:
+    #     max_len = 0
+    #     print("batch size 0")
     tensor_shape = (batch_size, max_len)
     tensor = tensor_type(*tensor_shape)
     tensor.fill_(pad)

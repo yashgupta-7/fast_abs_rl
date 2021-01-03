@@ -4,6 +4,7 @@ import re
 import os
 from os.path import join
 import pickle as pkl
+# import pickle5 as pkl
 from itertools import starmap
 
 from cytoolz import curry
@@ -69,6 +70,7 @@ class Abstractor(object):
         self._max_len = max_len
 
     def _prepro(self, raw_article_sents):
+        # print(len(raw_article_sents))
         ext_word2id = dict(self._word2id)
         ext_id2word = dict(self._id2word)
         for raw_words in raw_article_sents:
@@ -81,8 +83,10 @@ class Abstractor(object):
         article = pad_batch_tensorize(articles, PAD, cuda=False
                                      ).to(self._device)
         extend_arts = conver2id(UNK, ext_word2id, raw_article_sents)
+        # print(len(extend_arts[0]))
         extend_art = pad_batch_tensorize(extend_arts, PAD, cuda=False
                                         ).to(self._device)
+        # print(len(extend_art[0]))
         extend_vsize = len(ext_word2id)
         dec_args = (article, art_lens, extend_art, extend_vsize,
                     START, END, UNK, self._max_len)

@@ -18,23 +18,31 @@ class MatchDataset(CnnDmDataset):
 
     def __getitem__(self, i):
         js_data = super().__getitem__(i)
+        # print(js_data)
         art_sents, abs_sents, extracts = (
             js_data['article'], js_data['abstract'], js_data['extracted'])
         matched_arts = [art_sents[i] for i in extracts]
         return matched_arts, abs_sents[:len(extracts)]
 
 for split in ['val', 'train']:
-	f = open('/home/yashgupta/exp/'+dataset+'/finished_files/extract_'+split+'.tok', 'w')
+	# f1 = open('/home/yashgupta/exp/'+dataset+'/finished_files/hf_extracts/'+split+'.source', 'w')
+	# f2 = open('/home/yashgupta/exp/'+dataset+'/finished_files/hf_extracts/'+split+'.target', 'w')
 	val = MatchDataset(split)
+	m = 0
+	m2 = 0
 	for i in range(val._n_data):
 		art_sents, abs_sents = val.__getitem__(i)
 		n_sents = len(art_sents)
 		for j in range(n_sents):
-			f.write(art_sents[j]+'\n')
-			f.write(abs_sents[j]+'\n')
-		if i%100==0:
+			m = max(m, len(art_sents[j].split(" ")))
+			m2 = max(m2, len(abs_sents[j].split(" ")))
+			# f1.write(art_sents[j]+'\n')
+			# f2.write(abs_sents[j]+'\n')
+		if i%10000==0:
 			print("Completed%", 100*i/val._n_data)
-	f.close()
+	print(m, m2)
+	# f1.close()
+	# f2.close()
 
 # print(val._n_data)
 # print(val.__getitem__(1))

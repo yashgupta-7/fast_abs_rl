@@ -242,7 +242,7 @@ class CopyLSTMDecoder(AttentionalLSTMDecoder):
                 dim=1,
                 index=extend_src.expand_as(score).contiguous().view(
                     beam*batch, -1),
-                source=score.contiguous().view(beam*batch, -1) * copy_prob
+                src=score.contiguous().view(beam*batch, -1) * copy_prob
         ) + 1e-8).contiguous().view(beam, batch, -1)
 
         k_lp, k_tok = lp.topk(k=k, dim=-1)

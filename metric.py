@@ -3,9 +3,54 @@ import os
 import threading
 import subprocess as sp
 from collections import Counter, deque
-
+# from bert_score import score
+import bert_score
 from cytoolz import concat, curry
 
+# import tensorflow as tf
+# tf.compat.v1.flags.DEFINE_string('f','','')
+# tf.compat.v1.flags.DEFINE_string('path','','')
+# tf.compat.v1.flags.DEFINE_string('abs_dir','','')
+# tf.compat.v1.flags.DEFINE_string('ext_dir','','')
+# tf.compat.v1.flags.DEFINE_string('reward','','')
+# tf.compat.v1.flags.DEFINE_string('ckpt_freq','','')
+# tf.compat.v1.flags.DEFINE_string('batch','','')
+# gpus = tf.config.experimental.list_physical_devices('GPU')
+# for gpu in gpus:
+#   tf.config.experimental.set_memory_growth(gpu, True)
+# from bleurt import score
+# checkpoint = "/exp/yashgupta/bleurt/bleurt-base-512"
+# scorer = score.BleurtScorer(checkpoint)
+
+@curry
+def compute_bleurt_score(output, reference, n=1, mode='f'):
+    # pass
+    # print(len(output), output)
+    scores = scorer.score(reference, output)
+    # print(len(scores), scores)
+    return scores
+
+import nltk
+@curry
+def compute_bleu_score(output, reference, n=1, mode='f'):
+    BLEUscore = nltk.translate.bleu_score.sentence_bleu([reference], output)
+    return BLEUscore
+
+import spacy
+import wmd
+nlp = spacy.load('en', create_pipeline=wmd.WMD.create_spacy_pipeline)
+@curry
+def compute_wms_score(output, reference, n=1, mode='f'):
+    doc1 = nlp(" ".join(output))
+    doc2 = nlp(" ".join(reference))
+    return doc1.similarity(doc2)
+    
+@curry
+def compute_bert_score(output, reference, n=1, mode='f'):
+    # print(" ".join(output), " ".join(reference))
+    # P,R,F1 = score([" ".join(output)], [" ".join(reference)], lang='en', verbose=True)
+    P,R,F1 = bert_score.score(output, reference, lang='en', verbose=False)
+    return [f.item() for f in F1]
 
 def make_n_grams(seq, n):
     """ return iterator """
@@ -76,6 +121,7 @@ def compute_rouge_l(output, reference, mode='f'):
             score = recall
         else:
             score = f_score
+    # print(score)
     return score
 
 

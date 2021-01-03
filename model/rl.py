@@ -169,6 +169,7 @@ class PtrScorer(nn.Module):
                 attn_mem, attn_feat, query, self._attn_v, self._attn_wq)
             score = self._score_linear(output)
             scores.append(score)
+            lstm_states=(h,c) #added by Arjun
             lstm_in = output
         return scores
 
@@ -189,6 +190,35 @@ class ActorCritic(nn.Module):
         self._sent_enc = sent_encoder
         self._art_enc = art_encoder
         self._ext = PtrExtractorRLStop(extractor)
+        self._scr = PtrScorer(extractor)
+        self._batcher = art_batcher
+
+    def forward(self, raw_article_sents, n_abs=None):
+        article_sent = self._batcher(raw_article_sents)
+        enc_sent = self._sent_enc(article_sent).unsqueeze(0)
+        enc_art = self._art_enc(enc_sent).squeeze(0)
+        if n_abs is not None and not self.training:
+            n_abs = min(len(raw_article_sents), n_abs)
+        if n_abs is None:
+            outputs = self._ext(enc_art)
+        else:
+            outputs = self._ext(enc_art, n_abs)
+        if self.training:
+            if n_abs is None:
+                n_abs = len(outputs[0])
+            scores = self._scr(enc_art, n_abs)
+            return outputs, scores
+        else:
+            return outputs
+
+class ActorCriticPreSumm(nn.Module):
+    """ shared encoder between actor/critic"""
+    def __init__(self, sent_encoder, art_encoder,
+                 extractor, art_batcher):
+        super().__init__()
+        self._sent_enc = sent_encoder
+        self._art_enc = art_encoder
+        self._ext = PreSummRL() #PtrExtractorRLStop(extractor)
         self._scr = PtrScorer(extractor)
         self._batcher = art_batcher
 

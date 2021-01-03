@@ -24,7 +24,7 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from rl import get_bart_summaries
 
 def decode(save_path, model_dir, split, batch_size,
-           beam_size, diverse, max_len, cuda, bart=False):
+           beam_size, diverse, max_len, cuda, bart=False, clip=-1):
     start = time()
     # setup model
     with open(join(model_dir, 'meta.json')) as f:
@@ -76,6 +76,9 @@ def decode(save_path, model_dir, split, batch_size,
             ext_inds = []
             for raw_art_sents in tokenized_article_batch:
                 ext = extractor(raw_art_sents)[:-1]  # exclude EOE
+                if clip > 0 and len(ext) > clip:  #ADDED FOR CLIPPING, CHANGE BACK
+                    # print("hi", clip)
+                    ext = ext[0:clip]
                 if not ext:
                     # use top-5 if nothing is extracted
                     # in some rare cases rnn-ext does not extract at all
@@ -167,12 +170,14 @@ if __name__ == '__main__':
                         help='disable GPU training')
     parser.add_argument('--bart', type=int, action='store', default=0,
                         help='use BART base (1) or BART large (2) as abstractor')
+    parser.add_argument('--clip', type=int, action='store', default=-1,
+                        help='max summary sentences to clip at')
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available() and not args.no_cuda
 
     if args.bart ==  1:
         tokenizer = AutoTokenizer.from_pretrained("facebook/bart-base")
-        bart_model = AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart/")
+        bart_model = AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart_eval/")
         torch_device = 'cuda' if args.cuda else 'cpu' #torch.cuda.is_available()
         bart_model.to(torch_device)
     elif args.bart == 2:
@@ -184,4 +189,4 @@ if __name__ == '__main__':
     data_split = 'test' if args.test else 'val'
     decode(args.path, args.model_dir,
            data_split, args.batch, args.beam, args.div,
-           args.max_dec_word, args.cuda, bart=args.bart)
+           args.max_dec_word, args.cuda, bart=args.bart, clip=args.clip)

@@ -23,11 +23,15 @@ class Sentences(object):
     def __init__(self):
         self._path = join(DATA_DIR, 'train')
         self._n_data = count_data(self._path)
+        # print(self._n_data)
 
     def __iter__(self):
         for i in range(self._n_data):
+            # print(join(self._path, '{}.json'.format(i)))
             with open(join(self._path, '{}.json'.format(i))) as f:
-                data = json.loads(f.read())
+                # print(json.loads(f.read()))
+                data = json.loads(f.read()) #[0]
+                # print(data)
             for s in concatv(data['article'], data['abstract']):
                 yield ['<s>'] + s.lower().split() + [r'<\s>']
 
@@ -41,6 +45,7 @@ def main(args):
         os.makedirs(save_dir)
 
     sentences = Sentences()
+    # print(sentences)
     model = gensim.models.Word2Vec(
         size=args.dim, min_count=5, workers=16, sg=1)
     model.build_vocab(sentences)

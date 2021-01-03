@@ -2,6 +2,7 @@
 import argparse
 import json
 import pickle as pkl
+# import pickle5 as pkl
 import os
 from os.path import join, exists
 from itertools import cycle
@@ -25,7 +26,7 @@ from rl import get_grad_fn
 from rl import A2CPipeline
 from decoding import load_best_ckpt
 from decoding import Abstractor, ArticleBatcher
-from metric import compute_rouge_l, compute_rouge_n, compute_bert_score, compute_bleurt_score
+from metric import compute_rouge_l, compute_rouge_n, compute_bert_score, compute_bleurt_score, compute_bleu_score, compute_wms_score
 from rl import set_abstractor
 
 MAX_ABS_LEN = 30
@@ -72,6 +73,10 @@ def configure_net(abs_dir, ext_dir, cuda):
                         extractor._art_enc,
                         extractor._extractor,
                         ArticleBatcher(agent_vocab, cuda))
+    # agent = ActorCriticPreSumm(extractor._sent_enc,
+    #                     extractor._art_enc,
+    #                     extractor._extractor,
+    #                     ArticleBatcher(agent_vocab, cuda))
     if cuda:
         agent = agent.cuda()
 
@@ -141,6 +146,10 @@ def train(args):
         reward_fn = compute_bert_score
     elif (args.reward == "bleurt-score"):
         reward_fn = compute_bleurt_score
+    elif (args.reward == "bleu-score"):
+        reward_fn = compute_bleu_score
+    elif (args.reward == "wms"):
+        reward_fn = compute_wms_score
     stop_reward_fn = compute_rouge_n(n=1)
 
     # save abstractor binary
@@ -202,7 +211,7 @@ if __name__ == '__main__':
                         help='ckeckpoint used decode')
 
     # training options
-    parser.add_argument('--reward', action='store', default='rouge-l', #options -> rouge-l, bert-score, bleurt-score
+    parser.add_argument('--reward', action='store', default='rouge-l', #options -> rouge-l, bert-score, bleurt-score, bleu-score, wms
                         help='reward function for RL')
     parser.add_argument('--lr', type=float, action='store', default=1e-4,
                         help='learning rate')
@@ -229,7 +238,7 @@ if __name__ == '__main__':
     parser.add_argument('--bart', type=int, action='store', default=0,
                         help='use BART base (1) or BART large (2) as abstractor')
     parser.add_argument('--wt_rouge', type=float, action='store', default=0,
-                        help='use BART large as abstractor') 
+                        help='weight of ROUGE with bert-score or bleurt-score') 
     args = parser.parse_args()
     set_abstractor(args)
     args.cuda = torch.cuda.is_available() and not args.no_cuda

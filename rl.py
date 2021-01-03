@@ -12,7 +12,7 @@ from torch.nn import functional as F
 from torch import autograd
 from torch.nn.utils import clip_grad_norm_
 
-from metric import compute_rouge_l, compute_rouge_n, compute_bert_score, compute_bleurt_score
+from metric import compute_rouge_l, compute_rouge_n, compute_bert_score, compute_bleurt_score, compute_bleu_score, compute_wms_score 
 from training import BasicPipeline
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
@@ -26,11 +26,12 @@ use_bart = 0
 wt_rge = 0.0
 
 def set_abstractor(args):
+    global use_bart, wt_rge, tokenizer, bart_model
     use_bart = args.bart
     wt_rge = args.wt_rouge
     if use_bart == 1:
         tokenizer = AutoTokenizer.from_pretrained("facebook/bart-base")
-        bart_model = AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart_2/")
+        bart_model = AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart_eval/")
         bart_model.to(torch_device) 
     elif use_bart == 2:
         tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large")
@@ -39,6 +40,7 @@ def set_abstractor(args):
     return
 
 def get_bart_summaries(sents, tokenizer, model, beam_size=2):
+    # print(bart_model)
     sents = [" ".join(sent) for sent in sents]
     batch = tokenizer(sents,truncation=True,padding='longest',max_length=130,return_tensors='pt').to(torch_device)
     translated = model.generate(batch['input_ids'], max_length=90, num_beams=beam_size) #, early_stopping=True)
@@ -78,7 +80,7 @@ def a2c_validate(agent, abstractor, loader):
 
 def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
                    gamma=0.99, reward_fn=compute_rouge_l,
-                   stop_reward_fn=compute_rouge_n(n=1), stop_coeff=1.0, wt_rge = wt_rge):
+                   stop_reward_fn=compute_rouge_n(n=1), stop_coeff=1.0): #, wt_rge = wt_rge):
     opt.zero_grad()
     indices = []
     probs = []
@@ -93,7 +95,9 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
         ext_sents += [raw_arts[idx.item()]
                       for idx in inds if idx.item() < len(raw_arts)]
     with torch.no_grad():
-        if use_bart:
+        if not ext_sents:
+            summaries = []
+        elif use_bart:
             summaries = get_bart_summaries(ext_sents, tokenizer, bart_model)
         else:
             summaries = abstractor(ext_sents)
@@ -119,15 +123,18 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
     i = 0
     t = 0
     for inds, abss in zip(indices, abs_batch):
-        # print([j for j in range(min(len(inds)-1, len(abss)))])
-        if (reward_fn == compute_bert_score or reward_fn == compute_bleurt_score) and wt_rge != 0:
-            rwd_lst = [(1-wt_rge)*F1s[t + j] + wt_rge*compute_rouge_l(summaries[i+j], abss[j]) for j in range(min(len(inds)-1, len(abss)))]
+        # print([j for j in range(min(len(inds)-1, len(abss)))]) compute_rouge_lcompute_rouge_n(n=2) #PLEASE NOTE HERE
+        if (reward_fn == compute_bert_score or reward_fn == compute_bleurt_score) and wt_rge >= 0.0001:
+            rwd_lst = [(1-wt_rge)*F1s[t + j] + wt_rge*compute_rouge_n(summaries[i+j], abss[j],  n=2) for j in range(min(len(inds)-1, len(abss)))]
             # print(rwd_lst)
             t += min(len(inds)-1, len(abss))
         elif (reward_fn == compute_bert_score or reward_fn == compute_bleurt_score):
             rwd_lst = [F1s[t + j] for j in range(min(len(inds)-1, len(abss)))]
             # print(rwd_lst)
             t += min(len(inds)-1, len(abss))
+        elif wt_rge >= 0.0001:
+            # print("hi", wt_rge) 
+            rwd_lst = [(1-wt_rge)*reward_fn(summaries[i+j], abss[j]) + wt_rge*compute_rouge_l(summaries[i+j], abss[j]) for j in range(min(len(inds)-1, len(abss)))]
         else:
             rwd_lst = [reward_fn(summaries[i+j], abss[j]) for j in range(min(len(inds)-1, len(abss)))]
         rs = (rwd_lst
