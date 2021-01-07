@@ -212,6 +212,7 @@ class LSTMPointerNet(nn.Module):
             score = score.squeeze()
             for e in extracts:
                 score[e] = -1e6
+            # print(score)
             ext = score.max(dim=0)[1].item()
             extracts.append(ext)
             lstm_states = (h, c)
@@ -249,6 +250,7 @@ class LSTMPointerNet(nn.Module):
             norm_score = F.softmax(score, dim=-1)
         else:
             mask = len_mask(mem_sizes, score.device).unsqueeze(-2)
+            # print("bye", score.shape, mask.shape)
             norm_score = prob_normalize(score, mask)
         output = torch.matmul(norm_score, attention)
         return output
@@ -274,6 +276,7 @@ class PtrExtractSumm(nn.Module):
 
     def forward(self, article_sents, sent_nums, target):
         enc_out = self._encode(article_sents, sent_nums)
+        print(enc_out.shape, target.shape, target, list(map(len, article_sents)), sent_nums)
         bs, nt = target.size()
         d = enc_out.size(2)
         ptr_in = torch.gather(
@@ -309,3 +312,80 @@ class PtrExtractSumm(nn.Module):
 
     def set_embedding(self, embedding):
         self._sent_enc.set_embedding(embedding)
+
+
+import sys, os
+sys.path.append(os.path.abspath(os.path.join('/exp/yashgupta/PreSumm/src/')))
+# import myextract
+from myextract import args_bert, args_train, model_flags
+from models.model_builder import ExtSummarizerNew
+
+class TransExtractSumm(nn.Module):
+    """rnn-ext"""
+    def __init__(self, emb_dim, vocab_size, conv_hidden,
+                 lstm_hidden, lstm_layer, bidirectional,
+                 n_hop=1, dropout=0.0):
+        super().__init__()
+        # self._sent_enc = ConvSentEncoder(
+        #     vocab_size, emb_dim, conv_hidden, dropout)
+        # self._art_enc = LSTMEncoder(
+        #     3*conv_hidden, lstm_hidden, lstm_layer,
+        #     dropout=dropout, bidirectional=bidirectional
+        # )
+        checkpoint = torch.load(args_train.test_from, map_location=lambda storage, loc: storage)
+        opt = vars(checkpoint['opt'])
+        for k in opt.keys():
+            if (k in model_flags):
+                setattr(args_train, k, opt[k])
+        device = "cpu" if args_train.visible_gpus == '-1' else "cuda"
+
+        self._art_enc = ExtSummarizerNew(args_train, device, checkpoint) #myextract.model_trans
+        enc_out_dim = 768 #lstm_hidden * (2 if bidirectional else 1)
+        self._extractor = LSTMPointerNet(
+            enc_out_dim, lstm_hidden, lstm_layer,
+            dropout, n_hop
+        )
+
+    def forward(self, article_sents, sent_nums, target):
+        # with torch.no_grad():
+        enc_out = self._encode(article_sents, sent_nums)
+        # print("here", article_sents.clss)
+        # print(enc_out.shape, target.shape, target, list(map(len, article_sents.src_str)), sent_nums)
+        bs, nt = target.size()
+        d = enc_out.size(2)
+        ptr_in = torch.gather(
+            enc_out, dim=1, index=target.unsqueeze(2).expand(bs, nt, d)
+        )
+        output = self._extractor(enc_out, sent_nums, ptr_in)
+        return output
+
+    def extract(self, article_sents, sent_nums=None, k=4):
+        enc_out = self._encode(article_sents, sent_nums)
+        # print(enc_out.shape, enc_out)
+        output = self._extractor.extract(enc_out, sent_nums, k)
+        # print("out", output)
+        return output
+
+    def _encode(self, article_sents, sent_nums):
+        # self.model(src, segs, clss, mask, mask_cls)
+        # if sent_nums is None:  # test-time excode only
+        #     enc_sent = self._sent_enc(article_sents[0]).unsqueeze(0)
+        # else:
+        #     max_n = max(sent_nums)
+        #     enc_sents = [self._sent_enc(art_sent)
+        #                  for art_sent in article_sents]
+        #     def zero(n, device):
+        #         z = torch.zeros(n, self._art_enc.input_size).to(device)
+        #         return z
+        #     enc_sent = torch.stack(
+        #         [torch.cat([s, zero(max_n-n, s.device)], dim=0)
+        #            if n != max_n
+        #          else s
+        #          for s, n in zip(enc_sents, sent_nums)],
+        #         dim=0
+        #     )
+        lstm_out = self._art_enc(article_sents.src, article_sents.segs, article_sents.clss, article_sents.mask_src, article_sents.mask_cls) #self._art_enc(enc_sent, sent_nums)
+        return lstm_out
+
+    # def set_embedding(self, embedding):
+    #     self._sent_enc.set_embedding(embedding)

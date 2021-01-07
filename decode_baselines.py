@@ -20,7 +20,7 @@ from decoding import make_html_safe
 MAX_ABS_NUM = 6  # need to set max sentences to extract for non-RL extractor
 
 
-def decode(save_path, abs_dir, ext_dir, split, batch_size, max_len, cuda):
+def decode(save_path, abs_dir, ext_dir, split, batch_size, max_len, cuda, trans=False):
     start = time()
     # setup model
     if abs_dir is None:
@@ -51,6 +51,7 @@ def decode(save_path, abs_dir, ext_dir, split, batch_size, max_len, cuda):
     # prepare save paths and logs
     for i in range(MAX_ABS_NUM):
         os.makedirs(join(save_path, 'output_{}'.format(i)))
+    # os.makedirs(join(save_path, 'output'))
     dec_log = {}
     dec_log['abstractor'] = (None if abs_dir is None
                              else json.load(open(join(abs_dir, 'meta.json'))))
@@ -66,26 +67,40 @@ def decode(save_path, abs_dir, ext_dir, split, batch_size, max_len, cuda):
     i = 0
     with torch.no_grad():
         for i_debug, raw_article_batch in enumerate(loader):
-            tokenized_article_batch = map(tokenize(None), raw_article_batch)
+            if trans:
+                tokenized_article_batch = raw_article_batch #
+            else:
+                tokenized_article_batch = map(tokenize(None), raw_article_batch)
             ext_arts = []
             ext_inds = []
             for raw_art_sents in tokenized_article_batch:
-                ext = extractor(raw_art_sents)
-                ext_inds += [(len(ext_arts), len(ext))]
-                ext_arts += list(map(lambda i: raw_art_sents[i], ext))
+                if trans:
+                    ext, art_sents = extractor(raw_art_sents)
+                    # print(ext)
+                    ext_inds += [(len(ext_arts), len(ext))]
+                    ext_arts += list(map(lambda i: art_sents[i], ext))
+                else:
+                    ext = extractor(raw_art_sents)
+                    ext_inds += [(len(ext_arts), len(ext))]
+                    ext_arts += list(map(lambda i: raw_art_sents[i], ext))
             dec_outs = abstractor(ext_arts)
+            # print(dec_outs)
             assert i == batch_size*i_debug
             for j, n in ext_inds:
-                decoded_sents = [' '.join(dec) for dec in dec_outs[j:j+n]]
+                if trans:
+                    decoded_sents = dec_outs[j:j+n]
+                else:
+                    decoded_sents = [' '.join(dec) for dec in dec_outs[j:j+n]]
                 for k, dec_str in enumerate(decoded_sents):
                     with open(join(save_path, 'output_{}/{}.dec'.format(k, i)),
-                              'w') as f:
-                        f.write(make_html_safe(dec_str))
+                          'w') as f:
+                        f.write(make_html_safe(dec_str)) #f.write(make_html_safe('\n'.join(decoded_sents)))
 
                 i += 1
                 print('{}/{} ({:.2f}%) decoded in {} seconds\r'.format(
                     i, n_data, i/n_data*100, timedelta(seconds=int(time()-start))
                 ), end='')
+            # break
     print()
 
 
@@ -114,9 +129,11 @@ if __name__ == '__main__':
 
     parser.add_argument('--no-cuda', action='store_true',
                         help='disable GPU training')
+    parser.add_argument('--trans', action='store_true',
+                        help='use trans_rnn')
     args = parser.parse_args()
     args.cuda = torch.cuda.is_available() and not args.no_cuda
 
     data_split = 'test' if args.test else 'val'
     decode(args.path, args.abs_dir, args.ext_dir,
-           data_split, args.batch, args.max_dec_word, args.cuda)
+           data_split, args.batch, args.max_dec_word, args.cuda, trans=args.trans)

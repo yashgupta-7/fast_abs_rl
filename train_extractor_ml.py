@@ -13,7 +13,7 @@ from torch.nn import functional as F
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-from model.extract import ExtractSumm, PtrExtractSumm
+from model.extract import ExtractSumm, PtrExtractSumm, TransExtractSumm
 from model.util import sequence_loss
 from training import get_basic_grad_fn, basic_validate
 from training import BasicPipeline, BasicTrainer
@@ -22,11 +22,11 @@ from utils import PAD, UNK
 from utils import make_vocab, make_embedding
 
 from data.data import CnnDmDataset
-from data.batcher import coll_fn_extract, prepro_fn_extract
-from data.batcher import convert_batch_extract_ff, batchify_fn_extract_ff
-from data.batcher import convert_batch_extract_ptr, batchify_fn_extract_ptr
+from data.batcher import coll_fn_extract, prepro_fn_extract, prepro_fn_extract_trans
+from data.batcher import convert_batch_extract_ff, batchify_fn_extract_ff, batchify_fn_extract_trans
+from data.batcher import convert_batch_extract_ptr, batchify_fn_extract_ptr, convert_batch_extract_trans
 from data.batcher import BucketedGenerater
-
+from decoding import load_best_ckpt
 
 BUCKET_SIZE = 6400
 
@@ -49,17 +49,22 @@ class ExtractDataset(CnnDmDataset):
 
 
 def build_batchers(net_type, word2id, cuda, debug):
-    assert net_type in ['ff', 'rnn']
+    assert net_type in ['ff', 'rnn', 'trans_rnn']
     prepro = prepro_fn_extract(args.max_word, args.max_sent)
     def sort_key(sample):
         src_sents, _ = sample
         return len(src_sents)
-    batchify_fn = (batchify_fn_extract_ff if net_type == 'ff'
-                   else batchify_fn_extract_ptr)
-    convert_batch = (convert_batch_extract_ff if net_type == 'ff'
-                     else convert_batch_extract_ptr)
-    batchify = compose(batchify_fn(PAD, cuda=cuda),
-                       convert_batch(UNK, word2id))
+    if net_type == 'trans_rnn':
+        prepro = prepro_fn_extract_trans(args.max_word, args.max_sent)
+        batchify = compose(batchify_fn_extract_trans(cuda=cuda), convert_batch_extract_trans)
+    else:
+        prepro = prepro_fn_extract(args.max_word, args.max_sent)
+        batchify_fn = (batchify_fn_extract_ff if net_type == 'ff'
+                    else batchify_fn_extract_ptr)
+        convert_batch = (convert_batch_extract_ff if net_type == 'ff'
+                        else convert_batch_extract_ptr)
+        batchify = compose(batchify_fn(PAD, cuda=cuda),
+                        convert_batch(UNK, word2id))
 
     train_loader = DataLoader(
         ExtractDataset('train'), batch_size=BUCKET_SIZE,
@@ -81,8 +86,8 @@ def build_batchers(net_type, word2id, cuda, debug):
 
 
 def configure_net(net_type, vocab_size, emb_dim, conv_hidden,
-                  lstm_hidden, lstm_layer, bidirectional):
-    assert net_type in ['ff', 'rnn']
+                  lstm_hidden, lstm_layer, bidirectional, prev_ckpt=None):
+    assert net_type in ['ff', 'rnn', 'trans_rnn']
     net_args = {}
     net_args['vocab_size']    = vocab_size
     net_args['emb_dim']       = emb_dim
@@ -91,15 +96,22 @@ def configure_net(net_type, vocab_size, emb_dim, conv_hidden,
     net_args['lstm_layer']    = lstm_layer
     net_args['bidirectional'] = bidirectional
 
-    net = (ExtractSumm(**net_args) if net_type == 'ff'
-           else PtrExtractSumm(**net_args))
+    if net_type == 'ff':
+        net = ExtractSumm(**net_args)
+    elif net_type == 'trans_rnn':
+        net  = TransExtractSumm(**net_args)
+    else:
+        net = PtrExtractSumm(**net_args)
+    if prev_ckpt is not None:
+        ext_ckpt = load_best_ckpt(prev_ckpt)
+        net.load_state_dict(ext_ckpt)
     return net, net_args
 
 
 def configure_training(net_type, opt, lr, clip_grad, lr_decay, batch_size):
     """ supports Adam optimizer only"""
     assert opt in ['adam']
-    assert net_type in ['ff', 'rnn']
+    assert net_type in ['ff', 'rnn', 'trans_rnn']
     opt_kwargs = {}
     opt_kwargs['lr'] = lr
 
@@ -121,7 +133,7 @@ def configure_training(net_type, opt, lr, clip_grad, lr_decay, batch_size):
 
 
 def main(args):
-    assert args.net_type in ['ff', 'rnn']
+    assert args.net_type in ['ff', 'rnn', 'trans_rnn']
     # create data batcher, vocabulary
     # batcher
     with open(join(DATA_DIR, 'vocab_cnt.pkl'), 'rb') as f:
@@ -133,8 +145,8 @@ def main(args):
     # make net
     net, net_args = configure_net(args.net_type,
                                   len(word2id), args.emb_dim, args.conv_hidden,
-                                  args.lstm_hidden, args.lstm_layer, args.bi)
-    if args.w2v:
+                                  args.lstm_hidden, args.lstm_layer, args.bi, args.prev_ckpt)
+    if args.w2v and args.net_type in ['ff', 'rnn']:
         # NOTE: the pretrained embedding having the same dimension
         #       as args.emb_dim should already be trained
         embedding, _ = make_embedding(
@@ -230,6 +242,8 @@ if __name__ == '__main__':
                         help='run in debugging mode')
     parser.add_argument('--no-cuda', action='store_true',
                         help='disable GPU training')
+    parser.add_argument('--prev_ckpt', type=str, action='store', default=None,
+                        help='previous checkpoint')
     args = parser.parse_args()
     args.bi = not args.no_bi
     args.cuda = torch.cuda.is_available() and not args.no_cuda

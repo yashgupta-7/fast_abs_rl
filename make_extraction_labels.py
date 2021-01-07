@@ -42,7 +42,7 @@ def get_extract_label(art_sents, abs_sents):
 def process(split, i):
     data_dir = join(DATA_DIR, split)
     with open(join(data_dir, '{}.json'.format(i))) as f:
-        data = json.loads(f.read())
+        data = json.loads(f.read()) #[0]
     tokenize = compose(list, _split_words)
     art_sents = tokenize(data['article'])
     abs_sents = tokenize(data['abstract'])
@@ -75,7 +75,7 @@ def label(split):
         print('processing {}/{} ({:.2f}%%)\r'.format(i, n_data, 100*i/n_data),
               end='')
         with open(join(data_dir, '{}.json'.format(i))) as f:
-            data = json.loads(f.read())
+            data = json.loads(f.read())[0]
         tokenize = compose(list, _split_words)
         art_sents = tokenize(data['article'])
         abs_sents = tokenize(data['abstract'])

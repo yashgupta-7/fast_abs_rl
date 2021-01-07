@@ -195,8 +195,11 @@ class ActorCritic(nn.Module):
 
     def forward(self, raw_article_sents, n_abs=None):
         article_sent = self._batcher(raw_article_sents)
+        print(article_sent, article_sent.shape)
         enc_sent = self._sent_enc(article_sent).unsqueeze(0)
+        print(enc_sent.shape)
         enc_art = self._art_enc(enc_sent).squeeze(0)
+        print(enc_art.shape)
         if n_abs is not None and not self.training:
             n_abs = min(len(raw_article_sents), n_abs)
         if n_abs is None:

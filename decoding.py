@@ -13,7 +13,7 @@ import torch
 
 from utils import PAD, UNK, START, END
 from model.copy_summ import CopySumm
-from model.extract import ExtractSumm, PtrExtractSumm
+from model.extract import ExtractSumm, PtrExtractSumm, TransExtractSumm
 from model.rl import ActorCritic
 from data.batcher import conver2id, pad_batch_tensorize
 from data.data import CnnDmDataset
@@ -32,7 +32,7 @@ class DecodeDataset(CnnDmDataset):
 
     def __getitem__(self, i):
         js_data = super().__getitem__(i)
-        art_sents = js_data['article']
+        art_sents = js_data['article'], [0] #js_data['extracted']
         return art_sents
 
 
@@ -139,6 +139,9 @@ def _process_beam(id2word, beam, art_sent):
         return hyp
     return list(map(process_hyp, beam))
 
+import sys, os
+sys.path.append(os.path.abspath(os.path.join('/exp/yashgupta/PreSumm/src/')))
+import myextract
 
 class Extractor(object):
     def __init__(self, ext_dir, max_ext=5, cuda=True):
@@ -147,6 +150,8 @@ class Extractor(object):
             ext_cls = ExtractSumm
         elif ext_meta['net'] == 'ml_rnn_extractor':
             ext_cls = PtrExtractSumm
+        elif ext_meta['net'] == 'ml_trans_rnn_extractor':
+            ext_cls = TransExtractSumm
         else:
             raise ValueError()
         ext_ckpt = load_best_ckpt(ext_dir)
@@ -154,6 +159,7 @@ class Extractor(object):
         extractor = ext_cls(**ext_args)
         extractor.load_state_dict(ext_ckpt)
         word2id = pkl.load(open(join(ext_dir, 'vocab.pkl'), 'rb'))
+        self._net_type = ext_meta['net']
         self._device = torch.device('cuda' if cuda else 'cpu')
         self._net = extractor.to(self._device)
         self._word2id = word2id
@@ -163,10 +169,16 @@ class Extractor(object):
     def __call__(self, raw_article_sents):
         self._net.eval()
         n_art = len(raw_article_sents)
-        articles = conver2id(UNK, self._word2id, raw_article_sents)
-        article = pad_batch_tensorize(articles, PAD, cuda=False
-                                     ).to(self._device)
-        indices = self._net.extract([article], k=min(n_art, self._max_ext))
+        if self._net_type == 'ml_trans_rnn_extractor':
+            n_art = len(raw_article_sents[0])
+            batch = myextract.get_batch_trans([raw_article_sents])
+            indices = self._net.extract(batch, k=min(n_art, self._max_ext))
+            return indices, batch.src_str[0]
+        else:
+            articles = conver2id(UNK, self._word2id, raw_article_sents)
+            article = pad_batch_tensorize(articles, PAD, cuda=False
+                                        ).to(self._device)
+            indices = self._net.extract([article], k=min(n_art, self._max_ext))
         return indices
 
 
