@@ -55,7 +55,7 @@ class PtrExtractorRL(nn.Module):
                     score[0, o[0, 0].item()][0] = -1e18
                 out = score.max(dim=1, keepdim=True)[1]
             outputs.append(out)
-            lstm_in = attn_mem[out[0, 0].item()].unsqueeze(0)
+            lstm_in = attn_mem[out[0, 0].item()].unsqueeze(0) #[0, 0]
             lstm_states = (h, c)
         return outputs
 
@@ -90,7 +90,7 @@ class PtrExtractorRLStop(PtrExtractorRL):
     def forward(self, attn_mem, n_ext=None):
         """atten_mem: Tensor of size [num_sents, input_dim]"""
         if n_ext is not None:
-            return super().forward(attn_mem, n_ext)
+            return self.forward_next(attn_mem, n_ext) #super().forward(attn_mem, n_ext)
         max_step = attn_mem.size(0)
         attn_mem = torch.cat([attn_mem, self._stop.unsqueeze(0)], dim=0)
         attn_feat = torch.mm(attn_mem, self._attn_wm)
@@ -126,6 +126,50 @@ class PtrExtractorRLStop(PtrExtractorRL):
             return outputs, dists
         else:
             return outputs
+        
+    def forward_next(self, attn_mem, n_ext):
+        """atten_mem: Tensor of size [num_sents, input_dim]"""
+        max_step = attn_mem.size(0)
+        attn_mem = torch.cat([attn_mem, self._stop.unsqueeze(0)], dim=0)
+        attn_feat = torch.mm(attn_mem, self._attn_wm)
+        hop_feat = torch.mm(attn_mem, self._hop_wm)
+        outputs = []
+        dists = []
+        lstm_in = self._init_i.unsqueeze(0)
+        lstm_states = (self._init_h.unsqueeze(1), self._init_c.unsqueeze(1))
+        N = min(n_ext, max_step)
+        for i in range(N):
+            h, c = self._lstm_cell(lstm_in, lstm_states)
+            query = h[:, -1, :]
+            for _ in range(self._n_hop):
+                query = PtrExtractorRL.attention(hop_feat, query,
+                                                self._hop_v, self._hop_wq)
+            score = PtrExtractorRL.attention_score(
+                attn_feat, query, self._attn_v, self._attn_wq)
+            for o in outputs:
+                score[0, o.item()] = -1e18
+            if i == N-1:
+                score[0, max_step] = +1e18
+            else:
+                score[0, max_step] = -1e18
+            if self.training:
+                prob = F.softmax(score, dim=-1)
+                m = torch.distributions.Categorical(prob)
+                dists.append(m)
+                out = m.sample()
+            else:
+                out = score.max(dim=1, keepdim=True)[1]
+            outputs.append(out)
+            # if out.item() == max_step:
+            #     break
+            lstm_in = attn_mem[out.item()].unsqueeze(0)
+            lstm_states = (h, c)
+        if dists:
+            # return distributions only when not empty (trining)
+            return outputs, dists
+        else:
+            return outputs
+
 
 
 class PtrScorer(nn.Module):
@@ -152,14 +196,21 @@ class PtrScorer(nn.Module):
         # regression layer
         self._score_linear = nn.Linear(self._lstm_cell.input_size, 1)
 
-    def forward(self, attn_mem, n_step):
-        """atten_mem: Tensor of size [num_sents, input_dim]"""
+        self._stop = nn.Parameter(torch.Tensor(self._lstm_cell.input_size))
+        init.uniform_(self._stop, -INI, INI)
+
+    def forward(self, attn_mem, n_step, rl_output):       
+        scores = []
+        #print(attn_mem.size(), torch.Tensor(stop_feat).size())
+        # print(attn_mem.device, self._stop.device)
+        attn_mem = torch.cat([attn_mem, self._stop.unsqueeze(0)],dim=0)#top_feat).unsqueeze(0)], dim=0)
         attn_feat = torch.mm(attn_mem, self._attn_wm)
         hop_feat = torch.mm(attn_mem, self._hop_wm)
-        scores = []
+        
         lstm_in = self._init_i.unsqueeze(0)
         lstm_states = (self._init_h.unsqueeze(1), self._init_c.unsqueeze(1))
-        for _ in range(n_step):
+        for count in range(n_step):
+            
             h, c = self._lstm_cell(lstm_in, lstm_states)
             query = h[:, -1, :]
             for _ in range(self._n_hop):
@@ -169,9 +220,31 @@ class PtrScorer(nn.Module):
                 attn_mem, attn_feat, query, self._attn_v, self._attn_wq)
             score = self._score_linear(output)
             scores.append(score)
-            lstm_states=(h,c) #added by Arjun
-            lstm_in = output
+            lstm_states=(h,c)
+            lstm_in = attn_mem[rl_output[count]]
         return scores
+
+
+    # def forward(self, attn_mem, n_step):   #original
+    #     """atten_mem: Tensor of size [num_sents, input_dim]"""
+    #     attn_feat = torch.mm(attn_mem, self._attn_wm)
+    #     hop_feat = torch.mm(attn_mem, self._hop_wm)
+    #     scores = []
+    #     lstm_in = self._init_i.unsqueeze(0)
+    #     lstm_states = (self._init_h.unsqueeze(1), self._init_c.unsqueeze(1))
+    #     for _ in range(n_step):
+    #         h, c = self._lstm_cell(lstm_in, lstm_states)
+    #         query = h[:, -1, :]
+    #         for _ in range(self._n_hop):
+    #             query = PtrScorer.attention(hop_feat, hop_feat, query,
+    #                                         self._hop_v, self._hop_wq)
+    #         output = PtrScorer.attention(
+    #             attn_mem, attn_feat, query, self._attn_v, self._attn_wq)
+    #         score = self._score_linear(output)
+    #         scores.append(score)
+    #         lstm_states=(h,c) #added by Arjun
+    #         lstm_in = output
+    #     return scores
 
     @staticmethod
     def attention(attention, attention_feat, query, v, w):
@@ -193,14 +266,23 @@ class ActorCritic(nn.Module):
         self._scr = PtrScorer(extractor)
         self._batcher = art_batcher
 
-    def forward(self, raw_article_sents, n_abs=None):
-        article_sent = self._batcher(raw_article_sents)
-        print(article_sent, article_sent.shape)
-        enc_sent = self._sent_enc(article_sent).unsqueeze(0)
-        print(enc_sent.shape)
-        enc_art = self._art_enc(enc_sent).squeeze(0)
-        print(enc_art.shape)
-        if n_abs is not None and not self.training:
+    def forward(self, raw_article_sents, n_abs=None, raw_abs_sents=None):
+        article_sent = self._batcher(raw_article_sents, raw_abs_sents=raw_abs_sents)
+        # print(article_sent, article_sent.shape)
+        # print(raw_article_sents, raw_abs_sents)
+        if self._sent_enc is not None:
+            enc_sent = self._sent_enc(article_sent).unsqueeze(0)
+            enc_art = self._art_enc(enc_sent).squeeze(0)
+        else:
+            enc_sent = article_sent
+            # with torch.no_grad():
+            enc_art = self._art_enc(enc_sent.src, enc_sent.segs, enc_sent.clss, enc_sent.mask_src, enc_sent.mask_cls).squeeze(0)
+            raw_article_sents = [s.split(" ") for s in enc_sent.src_str[0]][:len(enc_sent.clss[0])]
+        # print(len(raw_article_sents), list(map(len, article_sent.clss)))
+        # print(enc_sent)
+        # enc_art = self._art_enc(enc_sent).squeeze(0)
+        # print(enc_art.shape)
+        if n_abs is not None: # and not self.training:
             n_abs = min(len(raw_article_sents), n_abs)
         if n_abs is None:
             outputs = self._ext(enc_art)
@@ -209,36 +291,8 @@ class ActorCritic(nn.Module):
         if self.training:
             if n_abs is None:
                 n_abs = len(outputs[0])
-            scores = self._scr(enc_art, n_abs)
-            return outputs, scores
+            # print("Hi", n_abs)
+            scores = self._scr(enc_art, n_abs, outputs[0]) #
+            return outputs, scores, raw_article_sents
         else:
-            return outputs
-
-class ActorCriticPreSumm(nn.Module):
-    """ shared encoder between actor/critic"""
-    def __init__(self, sent_encoder, art_encoder,
-                 extractor, art_batcher):
-        super().__init__()
-        self._sent_enc = sent_encoder
-        self._art_enc = art_encoder
-        self._ext = PreSummRL() #PtrExtractorRLStop(extractor)
-        self._scr = PtrScorer(extractor)
-        self._batcher = art_batcher
-
-    def forward(self, raw_article_sents, n_abs=None):
-        article_sent = self._batcher(raw_article_sents)
-        enc_sent = self._sent_enc(article_sent).unsqueeze(0)
-        enc_art = self._art_enc(enc_sent).squeeze(0)
-        if n_abs is not None and not self.training:
-            n_abs = min(len(raw_article_sents), n_abs)
-        if n_abs is None:
-            outputs = self._ext(enc_art)
-        else:
-            outputs = self._ext(enc_art, n_abs)
-        if self.training:
-            if n_abs is None:
-                n_abs = len(outputs[0])
-            scores = self._scr(enc_art, n_abs)
-            return outputs, scores
-        else:
-            return outputs
+            return outputs, raw_article_sents

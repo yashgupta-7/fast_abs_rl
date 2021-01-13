@@ -44,7 +44,7 @@ class ExtractDataset(CnnDmDataset):
 
     def __getitem__(self, i):
         js_data = super().__getitem__(i)
-        art_sents, extracts = js_data['article'], js_data['extracted']
+        art_sents, extracts = js_data['article'], js_data['abstract'], #js_data['extracted']
         return art_sents, extracts
 
 

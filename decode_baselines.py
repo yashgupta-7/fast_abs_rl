@@ -19,6 +19,22 @@ from decoding import make_html_safe
 
 MAX_ABS_NUM = 6  # need to set max sentences to extract for non-RL extractor
 
+def _get_ngrams(n, text):
+            ngram_set = set()
+            text_length = len(text)
+            max_index_ngram_start = text_length - n
+            for i in range(max_index_ngram_start + 1):
+                ngram_set.add(tuple(text[i:i + n]))
+            return ngram_set
+
+def _block_tri(c, p):
+    tri_c = _get_ngrams(3, c.split())
+    # print(tri_c)
+    for s in p:
+        tri_s = _get_ngrams(3, s.split())
+        if len(tri_c.intersection(tri_s)) > 0:
+            return True
+    return False
 
 def decode(save_path, abs_dir, ext_dir, split, batch_size, max_len, cuda, trans=False):
     start = time()
@@ -75,8 +91,28 @@ def decode(save_path, abs_dir, ext_dir, split, batch_size, max_len, cuda, trans=
             ext_inds = []
             for raw_art_sents in tokenized_article_batch:
                 if trans:
-                    ext, art_sents = extractor(raw_art_sents)
-                    # print(ext)
+                    ext, batch = extractor(raw_art_sents)
+                    art_sents = batch.src_str[0]
+                    # print(ext, [x.nonzero(as_tuple=True)[0] for x in batch.src_sent_labels])
+                    for k, idx in enumerate([ext]):
+                        _pred = []
+                        _ids = []
+                        if (len(batch.src_str[k]) == 0):
+                            continue
+                        for j in idx[:min(len(ext), len(batch.src_str[k]))]:
+                            if (j >= len(batch.src_str[k])):
+                                continue
+                            candidate = batch.src_str[k][j].strip()
+                            if (not _block_tri(candidate, _pred)):
+                                _pred.append(candidate)
+                                _ids.append(j)
+                            else:
+                                continue
+
+                            if (len(_pred) == 3):
+                                break
+                    # print(ext, _ids, [x.nonzero(as_tuple=True)[0] for x in batch.src_sent_labels], list(map(lambda i: art_sents[i], ext)))
+                    ext = _ids
                     ext_inds += [(len(ext_arts), len(ext))]
                     ext_arts += list(map(lambda i: art_sents[i], ext))
                 else:
@@ -100,7 +136,8 @@ def decode(save_path, abs_dir, ext_dir, split, batch_size, max_len, cuda, trans=
                 print('{}/{} ({:.2f}%) decoded in {} seconds\r'.format(
                     i, n_data, i/n_data*100, timedelta(seconds=int(time()-start))
                 ), end='')
-            # break
+            # if i_debug == 1:
+                # break
     print()
 
 

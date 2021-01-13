@@ -16,7 +16,9 @@ from metric import compute_rouge_l, compute_rouge_n, compute_bert_score, compute
 from training import BasicPipeline
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-
+import sys, os
+sys.path.append(os.path.abspath(os.path.join('/exp/yashgupta/PreSumm/src/')))
+from prepro.data_builder import presumm_reward, presumm_reward2, presumm_reward3, presumm_reward4
 
 tokenizer = None #AutoTokenizer.from_pretrained("facebook/bart-base")
 bart_model = None #AutoModelForSeq2SeqLM.from_pretrained("/exp/yashgupta/transformers/examples/seq2seq/absm_cnn_bart_2/")
@@ -57,8 +59,8 @@ def a2c_validate(agent, abstractor, loader):
         for art_batch, abs_batch in loader:
             ext_sents = []
             ext_inds = []
-            for raw_arts in art_batch:
-                indices = agent(raw_arts)
+            for raw_arts, raw_abs in zip(art_batch, abs_batch):
+                indices, raw_arts = agent(raw_arts, raw_abs_sents=raw_abs)
                 ext_inds += [(len(ext_sents), len(indices)-1)]
                 ext_sents += [raw_arts[idx.item()]
                               for idx in indices if idx.item() < len(raw_arts)]
@@ -69,7 +71,7 @@ def a2c_validate(agent, abstractor, loader):
             for (j, n), abs_sents in zip(ext_inds, abs_batch):
                 summs = all_summs[j:j+n]
                 # python ROUGE-1 (not official evaluation)
-                avg_reward += compute_rouge_n(list(concat(summs)),
+                avg_reward += compute_rouge_n(list(concat(summs[:3])),    ####CHANGEEEEEEEEEE THISSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS
                                               list(concat(abs_sents)), n=1)
                 i += 1
     avg_reward /= (i/100)
@@ -87,8 +89,10 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
     baselines = []
     ext_sents = []
     art_batch, abs_batch = next(loader)
-    for raw_arts in art_batch:
-        (inds, ms), bs = agent(raw_arts)
+    for raw_arts, raw_abs in zip(art_batch, abs_batch):
+        # print(raw_abs)
+        (inds, ms), bs, raw_arts = agent(raw_arts, raw_abs_sents=raw_abs, n_abs=None) #, n_abs=3
+        # print(inds, len(raw_arts), len(inds))
         baselines.append(bs)
         indices.append(inds)
         probs.append(ms)
@@ -122,8 +126,12 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
 
     i = 0
     t = 0
+    avg_len = 0
     for inds, abss in zip(indices, abs_batch):
+        # print(abss)
+        # abss_tot = [x for y in abss for x in y]
         # print([j for j in range(min(len(inds)-1, len(abss)))]) compute_rouge_lcompute_rouge_n(n=2) #PLEASE NOTE HERE
+        x = len(inds) - 1
         if (reward_fn == compute_bert_score or reward_fn == compute_bleurt_score) and wt_rge >= 0.0001:
             rwd_lst = [(1-wt_rge)*F1s[t + j] + wt_rge*compute_rouge_n(summaries[i+j], abss[j],  n=2) for j in range(min(len(inds)-1, len(abss)))]
             # print(rwd_lst)
@@ -135,25 +143,37 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
         elif wt_rge >= 0.0001:
             # print("hi", wt_rge) 
             rwd_lst = [(1-wt_rge)*reward_fn(summaries[i+j], abss[j]) + wt_rge*compute_rouge_l(summaries[i+j], abss[j]) for j in range(min(len(inds)-1, len(abss)))]
+        elif reward_fn == presumm_reward or reward_fn == presumm_reward2 or reward_fn == presumm_reward3 or reward_fn == presumm_reward4:
+            rwd_lst = reward_fn(summaries[i:i+len(inds)-1], abss)
+            x = 3
+            # print("hi", x)
+        elif reward_fn == "summ-rouge-l":
+            tmp = list(concat(abss))
+            rwd_lst = [compute_rouge_l(summaries[i+j], tmp, mode='r') for j in range(min(len(inds)-1, 3))]
         else:
-            rwd_lst = [reward_fn(summaries[i+j], abss[j]) for j in range(min(len(inds)-1, len(abss)))]
+            rwd_lst = [reward_fn(summaries[i+j], abss[j]) for j in range(min(len(inds)-1, len(abss)))] #abss_tot, mode=r
         rs = (rwd_lst
-              + [0 for _ in range(max(0, len(inds)-1-len(abss)))]
+              + [0 for _ in range(max(0, len(inds)-1-len(rwd_lst)))] #len(inds)-1-len(abss)
               + [stop_coeff*stop_reward_fn(
-                  list(concat(summaries[i:i+len(inds)-1])),
+                  list(concat(summaries[i:i+x])),
                   list(concat(abss)))])
-        # print(rs)
         assert len(rs) == len(inds)
         avg_reward += rs[-1]/stop_coeff
-        # print(avg_reward)
+        if reward_fn == presumm_reward or reward_fn == presumm_reward3 or reward_fn == presumm_reward4:
+            rs[-1] = 0
+        # if reward_fn == presumm_reward3:
+        #     rs.pop()
+        avg_len += (len(inds)-1)/len(abs_batch)# print(avg_reward)
         i += len(inds)-1
         # compute discounted rewards
+        # print(rs)
         R = 0
         disc_rs = []
         for r in rs[::-1]:
             R = r + gamma * R
             disc_rs.insert(0, R)
         rewards += disc_rs
+    # print(avg_len)
     indices = list(concat(indices))
     probs = list(concat(probs))
     baselines = list(concat(baselines))
@@ -165,9 +185,16 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
     baseline = torch.cat(baselines).squeeze()
     avg_advantage = 0
     losses = []
+    avg_list = [] ##ARJUN 
     for action, p, r, b in zip(indices, probs, reward, baseline):
-        advantage = r - b
+        advantage = (r - b).item()     ##ARJUN # (r-b)
         avg_advantage += advantage
+        avg_list.append(advantage)     ##ARJUN 
+    
+    avg_list = torch.Tensor(avg_list).to(baselines[0].device)   ##ARJUN #
+    avg_list = (avg_list - avg_list.mean()) / ( avg_list.std() + float(np.finfo(np.float32).eps)) ##ARJUN #
+
+    for action, p, advantage in zip(indices, probs, avg_list): ##ARJUN 
         losses.append(-p.log_prob(action)
                       * (advantage/len(indices))) # divide by T*B
     critic_loss = F.mse_loss(baseline, reward).unsqueeze(dim=0)
@@ -181,8 +208,9 @@ def a2c_train_step(agent, abstractor, loader, opt, grad_fn,
     log_dict = {}
     log_dict.update(grad_log)
     log_dict['reward'] = avg_reward/len(art_batch)
-    log_dict['advantage'] = avg_advantage.item()/len(indices)
+    log_dict['advantage'] = avg_advantage/len(indices) #removed .item()
     log_dict['mse'] = critic_loss.item()
+    log_dict['avg_len'] = avg_len
     assert not math.isnan(log_dict['grad_norm'])
     return log_dict
 
@@ -198,7 +226,10 @@ def get_grad_fn(agent, clip_grad, max_grad=1e2):
                 if p.grad is not None:
                     tot_grad += p.grad.norm(2) ** 2
             tot_grad = tot_grad ** (1/2)
-            grad_log['grad_norm'+n] = tot_grad.item()
+            try:
+                grad_log['grad_norm'+n] = tot_grad.item()
+            except:
+                grad_log['grad_norm'+n] = tot_grad
         grad_norm = clip_grad_norm_(
             [p for p in params if p.requires_grad], clip_grad)
         grad_norm = grad_norm.item()

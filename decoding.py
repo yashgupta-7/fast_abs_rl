@@ -32,7 +32,7 @@ class DecodeDataset(CnnDmDataset):
 
     def __getitem__(self, i):
         js_data = super().__getitem__(i)
-        art_sents = js_data['article'], [0] #js_data['extracted']
+        art_sents = js_data['article'], js_data['abstract'] #js_data['extracted']
         return art_sents
 
 
@@ -173,7 +173,7 @@ class Extractor(object):
             n_art = len(raw_article_sents[0])
             batch = myextract.get_batch_trans([raw_article_sents])
             indices = self._net.extract(batch, k=min(n_art, self._max_ext))
-            return indices, batch.src_str[0]
+            return indices, batch
         else:
             articles = conver2id(UNK, self._word2id, raw_article_sents)
             article = pad_batch_tensorize(articles, PAD, cuda=False
@@ -183,15 +183,21 @@ class Extractor(object):
 
 
 class ArticleBatcher(object):
-    def __init__(self, word2id, cuda=True):
+    def __init__(self, word2id, cuda=True, net_type='ml_rnn_extractor'):
         self._device = torch.device('cuda' if cuda else 'cpu')
         self._word2id = word2id
         self._device = torch.device('cuda' if cuda else 'cpu')
+        self.net_type = net_type
 
-    def __call__(self, raw_article_sents):
-        articles = conver2id(UNK, self._word2id, raw_article_sents)
-        article = pad_batch_tensorize(articles, PAD, cuda=False
-                                     ).to(self._device)
+    def __call__(self, raw_article_sents, raw_abs_sents=None):
+        if self.net_type == 'ml_rnn_extractor':
+            articles = conver2id(UNK, self._word2id, raw_article_sents)
+            article = pad_batch_tensorize(articles, PAD, cuda=False
+                                        ).to(self._device)
+        elif self.net_type == 'ml_trans_rnn_extractor':
+            # print([" ".join(r) for r in raw_article_sents])
+            # print([" ".join(r) for r in raw_abs_sents])
+            article = myextract.get_batch_trans([([" ".join(r) for r in raw_article_sents], [" ".join(r) for r in raw_abs_sents])])
         return article
 
 class RLExtractor(object):
@@ -200,11 +206,15 @@ class RLExtractor(object):
         assert ext_meta['net'] == 'rnn-ext_abs_rl'
         ext_args = ext_meta['net_args']['extractor']['net_args']
         word2id = pkl.load(open(join(ext_dir, 'agent_vocab.pkl'), 'rb'))
-        extractor = PtrExtractSumm(**ext_args)
+        self.net_type = ext_meta['net_args']['extractor']['net']
+        if  self.net_type == "ml_trans_rnn_extractor":
+            extractor = TransExtractSumm(**ext_args)
+        else:
+            extractor = PtrExtractSumm(**ext_args)
         agent = ActorCritic(extractor._sent_enc,
                             extractor._art_enc,
                             extractor._extractor,
-                            ArticleBatcher(word2id, cuda))
+                            ArticleBatcher(word2id, cuda, net_type=self.net_type))
         ext_ckpt = load_best_ckpt(ext_dir, reverse=True)
         agent.load_state_dict(ext_ckpt)
         self._device = torch.device('cuda' if cuda else 'cpu')
@@ -212,7 +222,7 @@ class RLExtractor(object):
         self._word2id = word2id
         self._id2word = {i: w for w, i in word2id.items()}
 
-    def __call__(self, raw_article_sents):
+    def __call__(self, raw_article_sents, raw_abs_sents=None):
         self._net.eval()
-        indices = self._net(raw_article_sents)
-        return indices
+        indices, raw_article_sents = self._net(raw_article_sents, raw_abs_sents=raw_abs_sents)
+        return indices, raw_article_sents

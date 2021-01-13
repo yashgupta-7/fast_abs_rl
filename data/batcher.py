@@ -205,11 +205,14 @@ def batchify_fn_extract_ptr(pad, data, cuda=True):
 def batchify_fn_extract_trans(batch, cuda=True):
     # batch, orig_batch = batch
     # _, targets = tuple(map(list, unzip(orig_batch)))
-    source_lists, targets = batch.src_str, [x.nonzero(as_tuple=True)[0] for x in batch.src_sent_labels] #batch.src_sent_labels
+    source_lists, targets = batch.src_str, batch.ord_labels #batch.src_sent_labels
+    # print([x.nonzero(as_tuple=True)[0] for x in batch.src_sent_labels], targets)
     src_nums = list(map(len, batch.clss))
     # targets = batch.tgt
 
+    # print(targets)
     target = pad_batch_tensorize(targets, pad=-1, cuda=cuda)
+    # print(target)
     remove_last = lambda tgt: tgt[:-1]
     tar_in = pad_batch_tensorize(
         list(map(remove_last, targets)),

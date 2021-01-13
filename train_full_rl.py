@@ -19,7 +19,7 @@ from data.data import CnnDmDataset
 from data.batcher import tokenize
 
 from model.rl import ActorCritic
-from model.extract import PtrExtractSumm
+from model.extract import PtrExtractSumm, TransExtractSumm
 
 from training import BasicTrainer
 from rl import get_grad_fn
@@ -28,6 +28,9 @@ from decoding import load_best_ckpt
 from decoding import Abstractor, ArticleBatcher
 from metric import compute_rouge_l, compute_rouge_n, compute_bert_score, compute_bleurt_score, compute_bleu_score, compute_wms_score
 from rl import set_abstractor
+import sys, os
+sys.path.append(os.path.abspath(os.path.join('/exp/yashgupta/PreSumm/src/')))
+from prepro.data_builder import presumm_reward, presumm_reward2, presumm_reward3, presumm_reward4
 
 MAX_ABS_LEN = 30
 
@@ -50,16 +53,19 @@ class RLDataset(CnnDmDataset):
 
 def load_ext_net(ext_dir):
     ext_meta = json.load(open(join(ext_dir, 'meta.json')))
-    assert ext_meta['net'] == 'ml_rnn_extractor'
+    assert ext_meta['net'] == 'ml_rnn_extractor' or ext_meta['net'] == 'ml_trans_rnn_extractor'
     ext_ckpt = load_best_ckpt(ext_dir)
     ext_args = ext_meta['net_args']
     vocab = pkl.load(open(join(ext_dir, 'vocab.pkl'), 'rb'))
-    ext = PtrExtractSumm(**ext_args)
+    if ext_meta['net'] == 'ml_rnn_extractor':
+        ext = PtrExtractSumm(**ext_args)
+    elif ext_meta['net'] == 'ml_trans_rnn_extractor':
+        ext = TransExtractSumm(**ext_args)
     ext.load_state_dict(ext_ckpt)
     return ext, vocab
 
 
-def configure_net(abs_dir, ext_dir, cuda):
+def configure_net(abs_dir, ext_dir, cuda, net_type='ml_rnn_extractor'):
     """ load pretrained sub-modules and build the actor-critic network"""
     # load pretrained abstractor model
     if abs_dir is not None:
@@ -72,7 +78,7 @@ def configure_net(abs_dir, ext_dir, cuda):
     agent = ActorCritic(extractor._sent_enc,
                         extractor._art_enc,
                         extractor._extractor,
-                        ArticleBatcher(agent_vocab, cuda))
+                        ArticleBatcher(agent_vocab, cuda, net_type=net_type))
     # agent = ActorCriticPreSumm(extractor._sent_enc,
     #                     extractor._art_enc,
     #                     extractor._extractor,
@@ -129,9 +135,10 @@ def train(args):
     if not exists(args.path):
         os.makedirs(args.path)
 
+    net_type = 'ml_{}_extractor'.format(args.net_type)
     # make net
     agent, agent_vocab, abstractor, net_args = configure_net(
-        args.abs_dir, args.ext_dir, args.cuda)
+        args.abs_dir, args.ext_dir, args.cuda, net_type=net_type)
 
     # configure training setting
     assert args.stop > 0
@@ -141,8 +148,9 @@ def train(args):
     )
     train_batcher, val_batcher = build_batchers(args.batch)
     # TODO different reward
-    reward_fn = compute_rouge_l
-    if (args.reward == "bert-score"):
+    if (args.reward == "rouge-l"):
+        reward_fn = compute_rouge_l
+    elif (args.reward == "bert-score"):
         reward_fn = compute_bert_score
     elif (args.reward == "bleurt-score"):
         reward_fn = compute_bleurt_score
@@ -150,6 +158,19 @@ def train(args):
         reward_fn = compute_bleu_score
     elif (args.reward == "wms"):
         reward_fn = compute_wms_score
+    elif (args.reward == "presumm"):
+        reward_fn = presumm_reward
+    elif (args.reward == "presumm2"):
+        reward_fn = presumm_reward2
+    elif (args.reward == "presumm3"):
+        reward_fn = presumm_reward3
+    elif (args.reward == "presumm4"):
+        reward_fn = presumm_reward4
+    elif args.reward == "summ-rouge-l":
+        reward_fn = "summ-rouge-l"
+    else:
+        print("please specify reward")
+        # AssertionError
     stop_reward_fn = compute_rouge_n(n=1)
 
     # save abstractor binary
@@ -209,6 +230,8 @@ if __name__ == '__main__':
                         help='root of the extractor model')
     parser.add_argument('--ckpt', type=int, action='store', default=None,
                         help='ckeckpoint used decode')
+    parser.add_argument('--net_type', type=str, action='store', default="rnn",
+                        help='type of model')
 
     # training options
     parser.add_argument('--reward', action='store', default='rouge-l', #options -> rouge-l, bert-score, bleurt-score, bleu-score, wms
@@ -238,7 +261,9 @@ if __name__ == '__main__':
     parser.add_argument('--bart', type=int, action='store', default=0,
                         help='use BART base (1) or BART large (2) as abstractor')
     parser.add_argument('--wt_rouge', type=float, action='store', default=0,
-                        help='weight of ROUGE with bert-score or bleurt-score') 
+                        help='weight of ROUGE with bert-score or bleurt-score')
+    # parser.add_argument('--mode', type=str, action='store', default='f',
+    #                     help='mode for rouge reward for presumm3') 
     args = parser.parse_args()
     set_abstractor(args)
     args.cuda = torch.cuda.is_available() and not args.no_cuda

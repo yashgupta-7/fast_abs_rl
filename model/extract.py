@@ -276,7 +276,7 @@ class PtrExtractSumm(nn.Module):
 
     def forward(self, article_sents, sent_nums, target):
         enc_out = self._encode(article_sents, sent_nums)
-        print(enc_out.shape, target.shape, target, list(map(len, article_sents)), sent_nums)
+        # print(enc_out.shape, target.shape, target, list(map(len, article_sents)), sent_nums)
         bs, nt = target.size()
         d = enc_out.size(2)
         ptr_in = torch.gather(
@@ -291,6 +291,7 @@ class PtrExtractSumm(nn.Module):
         return output
 
     def _encode(self, article_sents, sent_nums):
+        print(article_sents, sent_nums)
         if sent_nums is None:  # test-time excode only
             enc_sent = self._sent_enc(article_sents[0]).unsqueeze(0)
         else:
@@ -308,6 +309,7 @@ class PtrExtractSumm(nn.Module):
                 dim=0
             )
         lstm_out = self._art_enc(enc_sent, sent_nums)
+        print("out", lstm_out.shape)
         return lstm_out
 
     def set_embedding(self, embedding):
@@ -326,7 +328,7 @@ class TransExtractSumm(nn.Module):
                  lstm_hidden, lstm_layer, bidirectional,
                  n_hop=1, dropout=0.0):
         super().__init__()
-        # self._sent_enc = ConvSentEncoder(
+        self._sent_enc = None #ConvSentEncoder(
         #     vocab_size, emb_dim, conv_hidden, dropout)
         # self._art_enc = LSTMEncoder(
         #     3*conv_hidden, lstm_hidden, lstm_layer,
@@ -346,9 +348,19 @@ class TransExtractSumm(nn.Module):
             dropout, n_hop
         )
 
+        # for param in list(self._art_enc.bert.model.embeddings.parameters()):
+        #     param.requires_grad = False
+        # for name, param in self._art_enc.bert.model.named_parameters():                
+        #     if name.startswith('embeddings'):
+        #         param.requires_grad = False
+        # for param in self._extractor.parameters():
+            # param.requires_grad = False
+        # print("Froze Embedding layer BERT")
+
     def forward(self, article_sents, sent_nums, target):
-        # with torch.no_grad():
-        enc_out = self._encode(article_sents, sent_nums)
+        with torch.no_grad():
+            print("Freezing BERT+Trans")
+            enc_out = self._encode(article_sents, sent_nums)
         # print("here", article_sents.clss)
         # print(enc_out.shape, target.shape, target, list(map(len, article_sents.src_str)), sent_nums)
         bs, nt = target.size()
@@ -356,6 +368,7 @@ class TransExtractSumm(nn.Module):
         ptr_in = torch.gather(
             enc_out, dim=1, index=target.unsqueeze(2).expand(bs, nt, d)
         )
+        # with torch.no_grad():
         output = self._extractor(enc_out, sent_nums, ptr_in)
         return output
 
